@@ -30,6 +30,7 @@ let rooms = {};
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
+  socket.emit('connected', { id: socket.id });
 
  socket.on('createRoom', ({ roomId, playerName, lang, wordLength }) => {
   if (!rooms[roomId]) {           // <-- добавь "!"
