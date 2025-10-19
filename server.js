@@ -31,21 +31,22 @@ let rooms = {};
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
-  socket.on('createRoom', ({ roomId, playerName, lang, wordLength }) => {
-    if (!rooms[roomId]) {
-      rooms[roomId] = {
-        players: [],
-        lang,
-        wordLength,
-        word: null
-      };
+ socket.on('createRoom', ({ roomId, playerName, lang, wordLength }) => {
+  if (!rooms[roomId]) {           // <-- добавь "!"
+    rooms[roomId] = {
+      players: [],
+      lang,
+      wordLength,
+      word: '',
+      guesses: []
+    };
+  }
+  rooms[roomId].players.push({ id: socket.id, name: playerName, score: 0 });
+  socket.join(roomId);
+  io.to(roomId).emit('roomUpdate', rooms[roomId]);
+});
     }
-    const room = rooms[roomId];
-    room.players.push({ id: socket.id, name: playerName });
-    socket.join(roomId);
-    io.to(roomId).emit('roomUpdate', room);
-    console.log(`Room ${roomId} created/joined by ${playerName}`);
-  });
+   
 
 // Вспомогательная функция для выбора случайного слова
 function pickRandomWord(lang, len) {
