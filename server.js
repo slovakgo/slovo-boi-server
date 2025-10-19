@@ -32,8 +32,10 @@ io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
   socket.emit('connected', { id: socket.id });
 
+
+    }
  socket.on('createRoom', ({ roomId, playerName, lang, wordLength }) => {
-  if (!rooms[roomId]) {           // <-- добавь "!"
+  if (!rooms[roomId]) {
     rooms[roomId] = {
       players: [],
       lang,
@@ -42,12 +44,12 @@ io.on('connection', (socket) => {
       guesses: []
     };
   }
+
   rooms[roomId].players.push({ id: socket.id, name: playerName, score: 0 });
   socket.join(roomId);
   io.to(roomId).emit('roomUpdate', rooms[roomId]);
-});
-    }
-   
+  console.log(`Room ${roomId} created/joined by ${playerName}`);
+});  
 
 // Вспомогательная функция для выбора случайного слова
 function pickRandomWord(lang, len) {
