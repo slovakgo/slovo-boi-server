@@ -1,155 +1,156 @@
-// --- БАЗА ---
+// --- Slovo Boi server (Node + Express + Socket.IO) ---
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
 const { Server } = require('socket.io');
 
+// ---------- Basic app & CORS ----------
 const app = express();
-app.use(cors());
-
-// HTTP-проверка
-app.get('/', (_, res) => {
-  res.send('Slovo Boi (RU) server is LIVE');
-});
+app.use(cors({
+  origin: process.env.FRONTEND_URL || '*',
+  methods: ['GET', 'POST'],
+  credentials: true,
+}));
 
 const server = http.createServer(app);
 
-// Разрешим запросы с Netlify (и локально)
 const io = new Server(server, {
   cors: {
-    origin: [
-      '*',
-      /\.netlify\.app$/,
-      'http://localhost:5173',
-      'http://localhost:3000'
-    ],
+    origin: process.env.FRONTEND_URL || '*',
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
   },
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
 });
 
-// --- ПАМЯТЬ СЕРВЕРА ---
-/** rooms: {
- *   [roomId]: {
- *      players: [{ id, name, score }],
- *      lang: 'ru' | 'ua' | 'en',
- *      wordLength: 6,
- *      word: 'секрет',
- *      guesses: [] // массив строк
- *   }
+// Health-check route
+app.get('/', (_req, res) => {
+  res.send('Slovo Boi (RU) server is LIVE');
+});
+
+// ----------------- GAME LOGIC -----------------
+/** Rooms storage:
+ * roomId: {
+ *    players: [{ id, name, score }],
+ *    lang: 'ru',
+ *    wordLength: 6,
+ *    word: 'яблоко',
+ *    guesses: [] // [{ playerId, guess, result[] }]
  * }
  */
-let rooms = {};
+const rooms = {};
 
-// ----- ВСПОМОГАТЕЛЬНОЕ: словари -----
+// --- small built‑in dicts as a fallback (can be replaced by larger ones) ---
+const RU_6 = [
+  'яблоко','молоко','песням','береза','сердце','морозы','уроки','доскаа','паруса','мостик',
+  'пироги','стекло','веснаа','столик','ручкаа','игрушк'
+].filter(w => [...w].length === 6);
+
 const DICT = {
-  ru: {
-    5: ['мирок','пирог','молоко'.slice(0,5),'берег','ветер'],
-    6: ['яблоко','молоко','ветрик'.slice(0,6),'школа'.padEnd(6,'а'),'рыбина']
-  },
-  ua: {
-    6: ['молоко','кавава'.slice(0,6),'квітка','місток'.padEnd(6,'о')]
-  },
-  en: {
-    5: ['apple','river','table','chair','green'],
-    6: ['butter','bridge','planet','silver','orange']
-  }
+  ru: { 6: RU_6 },
 };
 
+/** Pick a random word by language & length */
 function pickRandomWord(lang, len) {
-  const arr = (DICT[lang] && DICT[lang][len]) || [];
-  if (!arr.length) return null;
-  return arr[Math.floor(Math.random() * arr.length)].toLowerCase();
+  const arr = (DICT[lang] && DICT[lang][len]) ? DICT[lang][len] : [];
+  if (!arr || arr.length === 0) return null;
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// --- СОБЫТИЯ СОКЕТОВ ---
+/** Compare guess against word; return result array of 'green'|'yellow'|'gray' */
+function checkGuess(word, guess) {
+  const res = [];
+  const target = [...word];
+  const g = [...guess];
+  const used = Array(target.length).fill(false);
+
+  // greens
+  for (let i = 0; i < g.length; i++) {
+    if (g[i] === target[i]) {
+      res[i] = 'green';
+      used[i] = true;
+    }
+  }
+  // yellows / grays
+  for (let i = 0; i < g.length; i++) {
+    if (res[i] === 'green') continue;
+    let found = -1;
+    for (let j = 0; j < target.length; j++) {
+      if (!used[j] && g[i] === target[j]) { found = j; break; }
+    }
+    if (found >= 0) {
+      res[i] = 'yellow';
+      used[found] = true;
+    } else {
+      res[i] = 'gray';
+    }
+  }
+  return res;
+}
+
+// ------------- Socket events --------------
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
-  socket.emit('connected', { id: socket.id });
 
-  // Создать комнату и сразу войти
   socket.on('createRoom', ({ roomId, playerName, lang, wordLength }) => {
-    if (!roomId) return;
     if (!rooms[roomId]) {
       rooms[roomId] = {
         players: [],
         lang,
         wordLength,
         word: '',
-        guesses: []
+        guesses: [],
       };
     }
-    // Добавляем игрока
     rooms[roomId].players.push({ id: socket.id, name: playerName, score: 0 });
     socket.join(roomId);
-
+    io.to(roomId).emit('roomUpdate', rooms[roomId]);
     console.log(`Room ${roomId} created/joined by ${playerName}`);
-    io.to(roomId).emit('roomUpdate', rooms[roomId]); // <- ОБНОВИТЬ "Игроков: ..."
   });
 
-  // Войти в существующую комнату
-  socket.on('joinRoom', ({ roomId, playerName }) => {
-    const room = rooms[roomId];
-    if (!room) {
-      socket.emit('errorMsg', 'Комната не найдена');
-      return;
-    }
-    room.players.push({ id: socket.id, name: playerName, score: 0 });
-    socket.join(roomId);
-    io.to(roomId).emit('roomUpdate', room);
-  });
-
-  // Старт раунда
+  // Start game: if no word given, server picks one
   socket.on('startGame', ({ roomId, word }, cb) => {
     const room = rooms[roomId];
-    if (!room) {
-      cb && cb({ ok: false, error: 'Комната не найдена' });
-      return;
-    }
-    // если слово не задано — выбираем случайно
+    if (!room) return cb && cb({ ok: false, error: 'Комната не найдена' });
+
     const len = room.wordLength || 6;
     const lang = room.lang || 'ru';
-    room.word = (word && String(word).toLowerCase()) || pickRandomWord(lang, len);
 
-    if (!room.word || room.word.length !== len) {
-      cb && cb({ ok: false, error: 'Слово не выбрано или длина не совпадает' });
-      return;
-    }
+    let chosen = (word && [...word].length === len) ? word.toLowerCase() : pickRandomWord(lang, len);
+    if (!chosen) return cb && cb({ ok: false, error: 'Нет слова выбранной длины' });
 
+    room.word = chosen.toLowerCase();
     room.guesses = [];
-    console.log(`Room ${roomId}: Game started with word "${room.word}"`);
+
     io.to(roomId).emit('gameStarted', { wordLength: len });
+    console.log(`Room ${roomId}: Game started with word "${room.word}"`);
     cb && cb({ ok: true });
   });
 
-  // Попытка игрока
-  socket.on('guessWord', ({ roomId, guess }) => {
+  socket.on('guessWord', ({ roomId, guess }, cb) => {
     const room = rooms[roomId];
-    if (!room || !room.word) return;
+    if (!room || !room.word) return cb && cb({ ok: false, error: 'Игра не начата' });
+    const g = (guess || '').toLowerCase();
 
-    const g = String(guess || '').toLowerCase();
-    if (g.length !== room.word.length) return;
-
-    // Подсветка
-    const result = [];
-    for (let i = 0; i < g.length; i++) {
-      if (g[i] === room.word[i]) result.push('green');
-      else if (room.word.includes(g[i])) result.push('yellow');
-      else result.push('gray');
+    if ([...g].length !== room.wordLength) {
+      return cb && cb({ ok: false, error: 'Неверная длина слова' });
     }
-    room.guesses.push(g);
 
-    io.to(roomId).emit('guessResult', { guess: g, result });
-    if (g === room.word) {
-      io.to(roomId).emit('gameOver', { word: room.word });
+    const result = checkGuess(room.word, g);
+    room.guesses.push({ playerId: socket.id, guess: g, result });
+    io.to(roomId).emit('guessResult', { guess: g, result, playerId: socket.id });
+
+    const win = result.every(c => c === 'green');
+    cb && cb({ ok: true, win });
+    if (win) {
+      io.to(roomId).emit('gameFinished', { word: room.word, winner: socket.id });
     }
   });
 
-  // Отключение
   socket.on('disconnect', () => {
-    // убрать игрока из всех комнат
-for (const roomId in rooms) {
+    // remove player from any rooms
+    for (const roomId in rooms) {
       const room = rooms[roomId];
       room.players = room.players.filter(p => p.id !== socket.id);
       io.to(roomId).emit('roomUpdate', room);
@@ -158,8 +159,8 @@ for (const roomId in rooms) {
   });
 });
 
-// --- СТАРТ СЕРВЕРА ---
-const PORT = process.env.PORT || 10000;
+// ---------- Start server ----------
+const PORT = process.env.PORT ? Number(process.env.PORT) : 10000;
 server.listen(PORT, () => {
-  console.log(`✅ Your service is live on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
