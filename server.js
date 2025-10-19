@@ -10,8 +10,11 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: '*', // можно поставить конкретный Netlify URL, если хочешь
-    methods: ['GET', 'POST'],
+    origin: [
+      "https://neon-dragon-ceb730.netlify.app",
+      "http://localhost:3000"
+    ],
+    methods: ["GET", "POST"],
     credentials: true
   },
   transports: ['websocket', 'polling']
