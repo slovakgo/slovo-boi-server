@@ -44,14 +44,33 @@ io.on('connection', (socket) => {
     console.log(`Room ${roomId} created/joined by ${playerName}`);
   });
 
-  socket.on('startGame', ({ roomId, word }) => {
-    const room = rooms[roomId];
-    if (room) {
-      room.word = word.toLowerCase();
-      io.to(roomId).emit('gameStarted', { wordLength: room.wordLength });
-      console.log(`Room ${roomId}: Game started with word ${word}`);
-    }
-  });
+// Вспомогательная функция для выбора случайного слова
+function pickRandomWord(lang, len) {
+  const arr = DICT[lang]?.[len] || [];
+  if (!arr.length) return null;
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+socket.on('startGame', ({ roomId, word }, cb) => {
+  const room = rooms[roomId];
+  if (!room) return cb?.({ ok: false, error: 'Комната не найдена' });
+
+  const len = room.wordLength || 6;
+  const lang = room.lang || 'ru';
+
+  // Если слово не введено — сервер сам выбирает
+  let secret = (typeof word === 'string' && word.length === len)
+    ? word.toLowerCase()
+    : pickRandomWord(lang, len);
+
+  if (!secret) return cb?.({ ok: false, error: 'Нет слов нужной длины' });
+
+  room.word = secret;
+  room.guesses = [];
+  io.to(roomId).emit('gameStarted', { wordLength: len });
+  console.log(`Room ${roomId}: Game started with word ${secret}`);
+  cb?.({ ok: true });
+}); 
 
   socket.on('guessWord', ({ roomId, guess }) => {
     const room = rooms[roomId];
